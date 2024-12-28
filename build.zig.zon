@@ -1,0 +1,17 @@
+.{
+    .name = "sls",
+    .version = "0.0.0",
+    .dependencies = .{
+        .zeit = .{
+            .url = "https://github.com/rockorager/zeit/archive/refs/tags/v0.4.4.tar.gz",
+            .hash = "12204b653c90b503f89e2f1a73c4754b83fb7275c100c81872deaca12c9f17e334ec",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "sls.zig",
+        "lsp/schema.zig",
+        "sls/data.zig",
+    },
+}

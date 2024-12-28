@@ -1,3 +1,7 @@
 *
 !.gitignore
-!sls.zig
+!*.zig
+!build.zig.zon
+
+!lsp/
+!sls/
