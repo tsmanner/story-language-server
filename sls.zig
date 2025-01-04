@@ -1,4 +1,6 @@
+const schema = @import("lsp/schema.zig");
 const std = @import("std");
+const story = @import("src/story.zig");
 const zeit = @import("zeit");
 
 var log_file: ?std.fs.File = null;
@@ -24,25 +26,9 @@ fn logFn(
     }
 }
 
-test {
-    var env = try std.process.getEnvMap(std.testing.allocator);
-    defer env.deinit();
-    const local = try zeit.local(std.testing.allocator, &env);
-    defer local.deinit();
-    const dt = (try zeit.instant(.{})).in(&local).time();
-    std.debug.print("{}\n", .{dt});
-}
-
 pub const std_options = std.Options{
     .logFn = logFn,
 };
-
-const Header = struct {
-    content_length: usize,
-    content_type: []const u8,
-};
-
-const schema = @import("lsp/schema.zig");
 
 pub fn Server(comptime Input: type, comptime Output: type) type {
     return struct {
@@ -50,32 +36,6 @@ pub fn Server(comptime Input: type, comptime Output: type) type {
 
         input: Input,
         output: Output,
-
-        fn parseHeader(self: Self, allocator: std.mem.Allocator) !Header {
-            var content_length: ?usize = null;
-            var content_type: []const u8 = "utf-8";
-            while (try self.input.readUntilDelimiterOrEofAlloc(allocator, '\n', 4096)) |line| {
-                defer allocator.free(line);
-                // A blank line means the header is over.  Delimiter is not included in line.
-                if (std.mem.eql(u8, "\r", line)) {
-                    break;
-                } else if (std.mem.startsWith(u8, line, "Content-Length: ")) {
-                    // line.len - 1 because LSP requires \r\n line endings...
-                    content_length = try std.fmt.parseInt(usize, line[16 .. line.len - 1], 10);
-                } else if (std.mem.startsWith(u8, line, "Content-Type: ")) {
-                    // line.len - 1 because LSP requires \r\n line endings...
-                    // TODO enumerate this?
-                    content_type = line[14 .. line.len - 1];
-                }
-            }
-            if (content_length == null) {
-                return error.HeaderMissingContentLength;
-            }
-            return .{
-                .content_length = content_length.?,
-                .content_type = content_type,
-            };
-        }
 
         fn parseMessage(self: Self, allocator: std.mem.Allocator, header: Header) !schema.Message {
             const buf = try allocator.alloc(u8, header.content_length);
@@ -90,45 +50,56 @@ pub fn Server(comptime Input: type, comptime Output: type) type {
                 &scanner,
                 .{ .max_value_len = buf.len, .allocate = .alloc_always },
             );
-            const message = try std.json.parseFromValueLeaky(schema.Message, allocator, parsed, .{ .ignore_unknown_fields = true });
-            std.log.info("→ id={?}", .{message.id});
-            std.log.info("  {s}", .{buf});
-            return message;
+            const id: ?i64 = if (parsed.object.get("id")) |id_json| id_json.integer else null;
+            std.log.info("[{?}]  client→ {s}", .{ id, buf });
+            return std.json.parseFromValueLeaky(schema.Message, allocator, parsed, .{ .ignore_unknown_fields = true });
         }
 
-        fn processRequest(self: Self, allocator: std.mem.Allocator, id: ?u32, request: schema.Request) !void {
+        fn processRequest(self: Self, allocator: std.mem.Allocator, id: schema.Id, request: schema.Request) !void {
             switch (request) {
                 .initialize => |init| {
                     _ = init;
-                    std.log.info("Processing initialize request id={}", .{id.?});
                     const response = schema.Message{
                         .jsonrpc = "2.0",
                         .id = id,
-                        .payload = .{
-                            .response = .{
-                                .initialize = .{
-                                    .serverInfo = .{ .name = "sls", .version = "0.0.0" },
-                                    .capabilities = .{},
-                                },
-                            },
-                        },
+                        .payload = .{ .response = .{ .initialize = .{
+                            .serverInfo = .{ .name = "sls", .version = "0.0.0" },
+                            .capabilities = .{},
+                        } } },
                     };
                     const message = try std.json.stringifyAlloc(allocator, response, .{
                         .emit_null_optional_fields = false,
                     });
                     defer allocator.free(message);
-                    std.log.info("← {}", .{id.?});
-                    std.log.info("  Content-Length: {}", .{message.len});
-                    std.log.info("  {s}", .{message});
+                    std.log.info("[{?}] ←server  {s}", .{ id, message });
                     try self.output.print("Content-Length: {}\r\n\r\n{s}", .{ message.len, message });
                 },
                 .initialized => {
-                    std.log.info("Server initialized", .{});
+                    std.log.info("[{?}]  server  Client initialized", .{id});
+                },
+                .@"textDocument/didOpen" => |doc| {
+                    std.log.info("[{?}]  server  textDocument/didOpen notification", .{id});
+                    _ = doc;
+                    // try story.parse(doc.uri, doc.text);
+                },
+                .shutdown => {
+                    const response = schema.Message{
+                        .jsonrpc = "2.0",
+                        .id = id,
+                        .payload = .{ .response = .{ .none = .{} } },
+                    };
+                    const message = try std.json.stringifyAlloc(allocator, response, .{
+                        .emit_null_optional_fields = false,
+                    });
+                    defer allocator.free(message);
+                    std.log.info("[{?}]  server  Shut down", .{id});
+                    std.log.info("[{?}] ←server  {s}", .{ id, message });
+                    try self.output.print("Content-Length: {}\r\n\r\n{s}", .{ message.len, message });
                 },
             }
         }
 
-        fn processResponse(self: Self, id: ?u32, response: schema.Response) !void {
+        fn processResponse(self: Self, id: schema.Id, response: schema.Response) !void {
             _ = .{
                 self,
                 id,
@@ -139,9 +110,11 @@ pub fn Server(comptime Input: type, comptime Output: type) type {
         pub fn run(self: *Self, allocator: std.mem.Allocator) !void {
             while (true) {
                 const header = try self.parseHeader(allocator);
+                std.log.info("[?]  client→ Message Header: {}", .{header});
                 var arena = std.heap.ArenaAllocator.init(allocator);
                 defer arena.deinit();
                 const message = try self.parseMessage(arena.allocator(), header);
+                std.log.info("[{?}]  client→ {}", .{ message.id, message });
                 switch (message.payload) {
                     .request => |request| try self.processRequest(allocator, message.id, request),
                     .response => |response| try self.processResponse(message.id, response),
@@ -227,6 +200,11 @@ const initialized_s =
     "\r\n" ++
     "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}\"";
 
+const shutdown_s =
+    "Content-Length: 44\r\n" ++
+    "\r\n" ++
+    "{\"jsonrpc\":\"2.0\",\"method\":\"shutdown\",\"id\":1}";
+
 test "Server.parseHeader" {
     var buf = std.io.fixedBufferStream(initialize_s);
     var server = initServer(
@@ -252,7 +230,7 @@ test "Server.parseMessage" {
     defer arena.deinit();
     const message = try server.parseMessage(allocator, try server.parseHeader(allocator));
     try std.testing.expectEqualStrings("2.0", message.jsonrpc);
-    try std.testing.expectEqual(@as(?u32, 0), message.id);
+    try std.testing.expectEqual(@as(?u32, 0), message.id.value);
     const init = message.payload.request.initialize;
     try std.testing.expectEqualDeep(
         init.capabilities.general.positionEncodings,
@@ -274,7 +252,12 @@ test "Server.parseMessage" {
     } else {
         return error.UnexpectedNullOptional;
     }
+    // Initialized
     buf = std.io.fixedBufferStream(initialized_s);
+    server.input = buf.reader();
+    _ = try server.parseMessage(allocator, try server.parseHeader(allocator));
+    // Shutdown
+    buf = std.io.fixedBufferStream(shutdown_s);
     server.input = buf.reader();
     _ = try server.parseMessage(allocator, try server.parseHeader(allocator));
 }
@@ -289,5 +272,10 @@ test "Server.processRequest" {
     const allocator = arena.allocator();
     defer arena.deinit();
     const message = try server.parseMessage(allocator, try server.parseHeader(allocator));
-    try server.processRequest(std.testing.allocator, 0, message.payload.request);
+    try server.processRequest(std.testing.allocator, schema.Id{ .value = 0 }, message.payload.request);
+}
+
+test {
+    std.testing.refAllDeclsRecursive(@This());
+    std.testing.refAllDeclsRecursive(story);
 }
