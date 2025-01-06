@@ -1,4 +1,4 @@
-const schema = @import("lsp/schema.zig");
+const lsp = @import("lsp");
 const std = @import("std");
 const story = @import("src/story.zig");
 const zeit = @import("zeit");
@@ -28,111 +28,66 @@ fn logFn(
 
 pub const std_options = std.Options{
     .logFn = logFn,
+    .log_level = .info,
 };
 
-pub fn Server(comptime Input: type, comptime Output: type) type {
-    return struct {
-        pub const Self = @This();
+pub const Server = struct {
+    pub const Self = @This();
 
-        input: Input,
-        output: Output,
+    /// SLS currently doesn't do anything with self or params on initialization.
+    pub fn initialize(_: *Self, _: lsp.InitializeParams) !lsp.InitializeResult {
+        return .{
+            .serverInfo = .{ .name = "sls", .version = "0.0.0" },
+            .capabilities = .{},
+        };
+    }
 
-        fn parseMessage(self: Self, allocator: std.mem.Allocator, header: Header) !schema.Message {
-            const buf = try allocator.alloc(u8, header.content_length);
-            const bytes_read = try self.input.read(buf);
-            if (bytes_read != buf.len) {
-                return error.EndOfStream;
-            }
-            var scanner = std.json.Scanner.initCompleteInput(allocator, buf);
-            defer scanner.deinit();
-            const parsed = try std.json.Value.jsonParse(
-                allocator,
-                &scanner,
-                .{ .max_value_len = buf.len, .allocate = .alloc_always },
-            );
-            const id: ?i64 = if (parsed.object.get("id")) |id_json| id_json.integer else null;
-            std.log.info("[{?}]  client→ {s}", .{ id, buf });
-            return std.json.parseFromValueLeaky(schema.Message, allocator, parsed, .{ .ignore_unknown_fields = true });
-        }
+    pub fn shutdown(_: *Self) !void {}
 
-        fn processRequest(self: Self, allocator: std.mem.Allocator, id: schema.Id, request: schema.Request) !void {
-            switch (request) {
-                .initialize => |init| {
-                    _ = init;
-                    const response = schema.Message{
-                        .jsonrpc = "2.0",
-                        .id = id,
-                        .payload = .{ .response = .{ .initialize = .{
-                            .serverInfo = .{ .name = "sls", .version = "0.0.0" },
-                            .capabilities = .{},
-                        } } },
-                    };
-                    const message = try std.json.stringifyAlloc(allocator, response, .{
-                        .emit_null_optional_fields = false,
-                    });
-                    defer allocator.free(message);
-                    std.log.info("[{?}] ←server  {s}", .{ id, message });
-                    try self.output.print("Content-Length: {}\r\n\r\n{s}", .{ message.len, message });
-                },
-                .initialized => {
-                    std.log.info("[{?}]  server  Client initialized", .{id});
-                },
-                .@"textDocument/didOpen" => |doc| {
-                    std.log.info("[{?}]  server  textDocument/didOpen notification", .{id});
-                    _ = doc;
-                    // try story.parse(doc.uri, doc.text);
-                },
-                .shutdown => {
-                    const response = schema.Message{
-                        .jsonrpc = "2.0",
-                        .id = id,
-                        .payload = .{ .response = .{ .none = .{} } },
-                    };
-                    const message = try std.json.stringifyAlloc(allocator, response, .{
-                        .emit_null_optional_fields = false,
-                    });
-                    defer allocator.free(message);
-                    std.log.info("[{?}]  server  Shut down", .{id});
-                    std.log.info("[{?}] ←server  {s}", .{ id, message });
-                    try self.output.print("Content-Length: {}\r\n\r\n{s}", .{ message.len, message });
-                },
-            }
-        }
-
-        fn processResponse(self: Self, id: schema.Id, response: schema.Response) !void {
-            _ = .{
-                self,
-                id,
-                response,
-            };
-        }
-
-        pub fn run(self: *Self, allocator: std.mem.Allocator) !void {
-            while (true) {
-                const header = try self.parseHeader(allocator);
-                std.log.info("[?]  client→ Message Header: {}", .{header});
-                var arena = std.heap.ArenaAllocator.init(allocator);
-                defer arena.deinit();
-                const message = try self.parseMessage(arena.allocator(), header);
-                std.log.info("[{?}]  client→ {}", .{ message.id, message });
-                switch (message.payload) {
-                    .request => |request| try self.processRequest(allocator, message.id, request),
-                    .response => |response| try self.processResponse(message.id, response),
-                }
-            }
-        }
-    };
-}
-
-pub fn initServer(
-    input: anytype,
-    output: anytype,
-) Server(@TypeOf(input), @TypeOf(output)) {
-    return .{
-        .input = input,
-        .output = output,
-    };
-}
+    // fn processRequest(self: Self, allocator: std.mem.Allocator, id: schema.Id, request: schema.Request) !void {
+    //     switch (request) {
+    //         .initialize => |init| {
+    //             _ = init;
+    //             const response = schema.Message{
+    //                 .jsonrpc = "2.0",
+    //                 .id = id,
+    //                 .payload = .{ .response = .{ .initialize = .{
+    //                     .serverInfo = .{ .name = "sls", .version = "0.0.0" },
+    //                     .capabilities = .{},
+    //                 } } },
+    //             };
+    //             const message = try std.json.stringifyAlloc(allocator, response, .{
+    //                 .emit_null_optional_fields = false,
+    //             });
+    //             defer allocator.free(message);
+    //             std.log.info("[{?}] ←server  {s}", .{ id, message });
+    //             try self.output.print("Content-Length: {}\r\n\r\n{s}", .{ message.len, message });
+    //         },
+    //         .initialized => {
+    //             std.log.info("[{?}]  server  Client initialized", .{id});
+    //         },
+    //         .@"textDocument/didOpen" => |doc| {
+    //             std.log.info("[{?}]  server  textDocument/didOpen notification", .{id});
+    //             _ = doc;
+    //             // try story.parse(doc.uri, doc.text);
+    //         },
+    //         .shutdown => {
+    //             const response = schema.Message{
+    //                 .jsonrpc = "2.0",
+    //                 .id = id,
+    //                 .payload = .{ .response = .{ .none = .{} } },
+    //             };
+    //             const message = try std.json.stringifyAlloc(allocator, response, .{
+    //                 .emit_null_optional_fields = false,
+    //             });
+    //             defer allocator.free(message);
+    //             std.log.info("[{?}]  server  Shut down", .{id});
+    //             std.log.info("[{?}] ←server  {s}", .{ id, message });
+    //             try self.output.print("Content-Length: {}\r\n\r\n{s}", .{ message.len, message });
+    //         },
+    //     }
+    // }
+};
 
 fn initLogFile(allocator: std.mem.Allocator) !void {
     var parts = std.ArrayList([]const u8).init(allocator);
@@ -176,12 +131,11 @@ pub fn main() !u8 {
     try initTimeZone(allocator);
     defer if (local_timezone) |tz| tz.deinit();
 
+    var backend = Server{};
     std.log.info("Initiating sls!", .{});
-    var server = initServer(
-        std.io.getStdIn().reader(),
-        std.io.getStdOut().writer(),
-    );
-    try server.run(allocator);
+    try lsp.serve(allocator, std.io.getStdIn().reader().any(), std.io.getStdOut().writer().any(), &backend);
+    std.log.info("Exiting sls!", .{});
+
     return 0;
 }
 
@@ -205,75 +159,75 @@ const shutdown_s =
     "\r\n" ++
     "{\"jsonrpc\":\"2.0\",\"method\":\"shutdown\",\"id\":1}";
 
-test "Server.parseHeader" {
-    var buf = std.io.fixedBufferStream(initialize_s);
-    var server = initServer(
-        buf.reader(),
-        std.io.null_writer,
-    );
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator();
-    const h = try server.parseHeader(allocator);
-    try std.testing.expectEqual(@as(usize, 1557), h.content_length);
-    try std.testing.expectEqualStrings("utf-8", h.content_type);
-}
+// test "Server.parseHeader" {
+//     var buf = std.io.fixedBufferStream(initialize_s);
+//     var server = initServer(
+//         buf.reader(),
+//         std.io.null_writer,
+//     );
+//     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+//     defer arena.deinit();
+//     const allocator = arena.allocator();
+//     const h = try server.parseHeader(allocator);
+//     try std.testing.expectEqual(@as(usize, 1557), h.content_length);
+//     try std.testing.expectEqualStrings("utf-8", h.content_type);
+// }
 
-test "Server.parseMessage" {
-    var buf = std.io.fixedBufferStream(initialize_s2);
-    var server = initServer(
-        buf.reader(),
-        std.io.null_writer,
-    );
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    const allocator = arena.allocator();
-    defer arena.deinit();
-    const message = try server.parseMessage(allocator, try server.parseHeader(allocator));
-    try std.testing.expectEqualStrings("2.0", message.jsonrpc);
-    try std.testing.expectEqual(@as(?u32, 0), message.id.value);
-    const init = message.payload.request.initialize;
-    try std.testing.expectEqualDeep(
-        init.capabilities.general.positionEncodings,
-        &[_]schema.Position.Encoding{ .@"utf-8", .@"utf-32", .@"utf-16" },
-    );
-    try std.testing.expectEqualDeep(
-        init.capabilities.textDocument.codeAction.codeActionLiteralSupport.codeActionKind.valueSet,
-        &[_][]const u8{ "", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source", "source.organizeImports" },
-    );
-    try std.testing.expectEqualStrings(
-        init.rootPath.?,
-        "/home/tsmanner/terrasa-notes",
-    );
-    if (init.rootUri) |root_uri| {
-        try std.testing.expectEqualDeep(
-            try std.Uri.parse("file:///home/tsmanner/terrasa-notes"),
-            root_uri.value,
-        );
-    } else {
-        return error.UnexpectedNullOptional;
-    }
-    // Initialized
-    buf = std.io.fixedBufferStream(initialized_s);
-    server.input = buf.reader();
-    _ = try server.parseMessage(allocator, try server.parseHeader(allocator));
-    // Shutdown
-    buf = std.io.fixedBufferStream(shutdown_s);
-    server.input = buf.reader();
-    _ = try server.parseMessage(allocator, try server.parseHeader(allocator));
-}
+// test "Server.parseMessage" {
+//     var buf = std.io.fixedBufferStream(initialize_s2);
+//     var server = initServer(
+//         buf.reader(),
+//         std.io.null_writer,
+//     );
+//     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+//     const allocator = arena.allocator();
+//     defer arena.deinit();
+//     const message = try server.parseMessage(allocator, try server.parseHeader(allocator));
+//     try std.testing.expectEqualStrings("2.0", message.jsonrpc);
+//     try std.testing.expectEqual(@as(?u32, 0), message.id.value);
+//     const init = message.payload.request.initialize;
+//     try std.testing.expectEqualDeep(
+//         init.capabilities.general.positionEncodings,
+//         &[_]schema.Position.Encoding{ .@"utf-8", .@"utf-32", .@"utf-16" },
+//     );
+//     try std.testing.expectEqualDeep(
+//         init.capabilities.textDocument.codeAction.codeActionLiteralSupport.codeActionKind.valueSet,
+//         &[_][]const u8{ "", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source", "source.organizeImports" },
+//     );
+//     try std.testing.expectEqualStrings(
+//         init.rootPath.?,
+//         "/home/tsmanner/terrasa-notes",
+//     );
+//     if (init.rootUri) |root_uri| {
+//         try std.testing.expectEqualDeep(
+//             try std.Uri.parse("file:///home/tsmanner/terrasa-notes"),
+//             root_uri.value,
+//         );
+//     } else {
+//         return error.UnexpectedNullOptional;
+//     }
+//     // Initialized
+//     buf = std.io.fixedBufferStream(initialized_s);
+//     server.input = buf.reader();
+//     _ = try server.parseMessage(allocator, try server.parseHeader(allocator));
+//     // Shutdown
+//     buf = std.io.fixedBufferStream(shutdown_s);
+//     server.input = buf.reader();
+//     _ = try server.parseMessage(allocator, try server.parseHeader(allocator));
+// }
 
-test "Server.processRequest" {
-    var buf = std.io.fixedBufferStream(initialize_s2);
-    var server = initServer(
-        buf.reader(),
-        std.io.null_writer,
-    );
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    const allocator = arena.allocator();
-    defer arena.deinit();
-    const message = try server.parseMessage(allocator, try server.parseHeader(allocator));
-    try server.processRequest(std.testing.allocator, schema.Id{ .value = 0 }, message.payload.request);
-}
+// test "Server.processRequest" {
+//     var buf = std.io.fixedBufferStream(initialize_s2);
+//     var server = initServer(
+//         buf.reader(),
+//         std.io.null_writer,
+//     );
+//     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+//     const allocator = arena.allocator();
+//     defer arena.deinit();
+//     const message = try server.parseMessage(allocator, try server.parseHeader(allocator));
+//     try server.processRequest(std.testing.allocator, schema.Id{ .value = 0 }, message.payload.request);
+// }
 
 test {
     std.testing.refAllDeclsRecursive(@This());

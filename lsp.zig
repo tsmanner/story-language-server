@@ -31,31 +31,6 @@
 
 const std = @import("std");
 
-pub const Position = struct {
-    line: u32,
-    character: u32,
-};
-
-pub const Range = struct {
-    start: Position,
-    end: Position,
-};
-
-pub const DocumentUri = struct {
-    value: std.Uri,
-
-    pub fn jsonParseFromValue(
-        _: std.mem.Allocator,
-        source: std.json.Value,
-        _: std.json.ParseOptions,
-    ) std.json.ParseFromValueError!DocumentUri {
-        return switch (source) {
-            .string => |string| .{ .value = std.Uri.parse(string) catch return error.UnexpectedToken },
-            else => error.UnexpectedToken,
-        };
-    }
-};
-
 pub fn BoolOrOptions(comptime Options: type) type {
     return union(enum) {
         boolean: bool,
@@ -64,198 +39,6 @@ pub fn BoolOrOptions(comptime Options: type) type {
         pub const jsonStringify = jsonStringifyUnion;
     };
 }
-
-pub const Id = struct {
-    value: ?u32,
-
-    pub fn format(
-        self: Id,
-        comptime fmt: []const u8,
-        options: std.fmt.FormatOptions,
-        writer: anytype,
-    ) !void {
-        if (self.value) |value| {
-            return std.fmt.formatType(value, fmt, options, writer, 1);
-        } else {
-            if (std.ascii.isDigit(@truncate(options.fill))) {
-                return std.fmt.formatType('-', "c", .{
-                    .precision = options.precision,
-                    .width = options.width,
-                    .alignment = options.alignment,
-                    .fill = '-',
-                }, writer, 1);
-            } else {
-                return std.fmt.formatType('-', "c", options, writer, 1);
-            }
-        }
-    }
-};
-
-pub const Message = struct {
-    jsonrpc: []const u8,
-    id: Id,
-    payload: union(enum) {
-        request: Request,
-        response: Response,
-    },
-
-    pub fn jsonParseFromValue(
-        allocator: std.mem.Allocator,
-        source: std.json.Value,
-        options: std.json.ParseOptions,
-    ) std.json.ParseFromValueError!Message {
-        switch (source) {
-            .object => |*object| {
-                const jsonrpc = try std.json.innerParseFromValue(
-                    []const u8,
-                    allocator,
-                    object.get("jsonrpc") orelse return error.MissingField,
-                    options,
-                );
-                const id = Id{
-                    .value = if (object.get("id")) |id_json|
-                        try std.json.innerParseFromValue(u32, allocator, id_json, options)
-                    else
-                        null,
-                };
-                // This looks like an RPC request
-                if (object.get("method")) |method| {
-                    const method_tag = std.meta.stringToEnum(Request.Tag, method.string) orelse {
-                        std.log.info("Invalid method {s}", .{method.string});
-                        return error.InvalidEnumTag;
-                    };
-                    switch (method_tag) {
-                        inline else => |tag| {
-                            const Payload = std.meta.TagPayload(Request, tag);
-                            switch (@typeInfo(Payload)) {
-                                .@"struct" => {
-                                    if (object.get("params")) |params| {
-                                        return .{ .jsonrpc = jsonrpc, .id = id, .payload = .{ .request = @unionInit(
-                                            Request,
-                                            @tagName(tag),
-                                            try std.json.innerParseFromValue(
-                                                Payload,
-                                                allocator,
-                                                params,
-                                                options,
-                                            ),
-                                        ) } };
-                                    }
-                                    std.log.err("While parsing an incoming message: 'params' key not found", .{});
-                                    return error.MissingField;
-                                },
-                                .void => {
-                                    return .{ .jsonrpc = jsonrpc, .id = id, .payload = .{ .request = @unionInit(Request, @tagName(tag), void{}) } };
-                                },
-                                else => {
-                                    std.log.err("Request payload is not a struct or void", .{});
-                                    return error.MissingField;
-                                },
-                            }
-                        },
-                    }
-                } else {
-                    std.log.err("Unrecognized message: expected 'method' field.", .{});
-                    return error.MissingField;
-                }
-            },
-            else => |token| {
-                std.log.err("Unexpected '{}' JSON token, expected 'object'", .{token});
-                return error.UnexpectedToken;
-            },
-        }
-    }
-
-    pub fn jsonStringify(self: Message, write_stream: anytype) !void {
-        try write_stream.beginObject();
-
-        try write_stream.objectField("jsonrpc");
-        try write_stream.write(self.jsonrpc);
-
-        if (self.id.value) |id| {
-            try write_stream.objectField("id");
-            try write_stream.write(id);
-        }
-
-        switch (self.payload) {
-            .request => |request| {
-                _ = request;
-            },
-            .response => |*response| {
-                switch (response.*) {
-                    .none => {},
-                    .@"error" => |err| {
-                        _ = err;
-                    },
-                    .initialize => |*init| {
-                        // result: {}   <- the init struct
-                        try write_stream.objectField("result");
-                        try write_stream.write(init);
-                    },
-                }
-            },
-        }
-        try write_stream.endObject();
-    }
-};
-
-pub const Request = union(enum) {
-    const Tag = std.meta.Tag(@This());
-
-    initialize: InitializeParams,
-    // initialized: Initialized.Params,
-    @"textDocument/didOpen": TextDocument.DidOpen.Params,
-    shutdown: Shutdown.Params,
-};
-
-pub const Response = union(enum) {
-    const Tag = std.meta.Tag(@This());
-    pub const Error = struct {
-        pub const Code = enum(i32) {
-            ParseError = -32700,
-            InvalidRequest = -32600,
-            MethodNotFound = -32601,
-            InvalidParams = -32602,
-            InternalError = -32603,
-            ServerNotInitialized = -32002,
-            UnknownErrorCode = -32001,
-            RequestFailed = -32803,
-            ServerCancelled = -32802,
-            ContentModified = -32801,
-            RequestCancelled = -32800,
-        };
-
-        code: Code,
-        message: []const u8,
-    };
-
-    // None means there is no response payload, but the operation was successful.
-    none: struct {},
-    initialize: InitializeResult,
-    @"error": Error,
-};
-
-pub const TextDocument = struct {
-    pub const Item = struct {
-        uri: DocumentUri,
-        languageId: []const u8,
-        version: i32,
-        text: []const u8,
-    };
-    pub const DidOpen = struct {
-        pub const Params = struct {
-            textDocument: Item,
-        };
-    };
-};
-
-pub const Shutdown = struct {
-    pub const Params = void;
-};
-
-//
-// New stuff
-//
 
 //
 // LSP message types
@@ -381,142 +164,206 @@ test "jsonParseFromValue ContentPart" {
 
 const Null = @TypeOf(null);
 
-const Method = struct {
+const Request = struct {
     /// If a method accepts parameters, this optional is the LSP data type of them.  null means it is called
     /// without parameters.
     params: ?type = null,
     /// If a method returns a result, this is the data type of it.  null means a method sends a response message with
-    /// an explicit null result.  Notifications must be null.
+    /// an explicit null result.
     result: ?type = null,
 
-    pub const RequestResult = union(enum) {
-        result: ?[]const u8,
-        @"error": ResponseError,
-    };
+    pub const CallResult = []const u8;
 
-    pub const initialize = Method{ .params = InitializeParams, .result = InitializeResult };
-    pub const initialized = Method{ .params = InitializeParams };
-    pub const @"textDocument/didOpen" = Method{ .params = TextDocument.DidOpen.Params };
-    pub const shutdown = Method{};
-    pub const exit = Method{};
+    fn callMethod(
+        allocator: std.mem.Allocator,
+        backend: anytype,
+        comptime method_name: []const u8,
+        params: ?std.json.Value,
+    ) !CallResult {
+        const method = getDecl(@TypeOf(backend), method_name);
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        if (@field(Request, method_name).result) |Result| {
+            const result: Result = try @call(
+                .auto,
+                method,
+                if (@field(Request, method_name).params) |Params|
+                    .{ backend, try std.json.parseFromValueLeaky(Params, arena.allocator(), params orelse return error.InvalidParams, .{}) }
+                else
+                    .{backend},
+            );
+            var buf = std.ArrayList(u8).init(allocator);
+            defer buf.deinit();
+            try std.json.stringify(result, .{ .emit_null_optional_fields = false }, buf.writer());
+            return try buf.toOwnedSlice();
+        } else {
+            try @call(
+                .auto,
+                method,
+                if (@field(Request, method_name).params) |Params|
+                    .{ backend, try std.json.parseFromValueLeaky(Params, arena.allocator(), params, .{}) }
+                else
+                    .{backend},
+            );
+            return "null";
+        }
+    }
+
+    pub const initialize = Request{ .params = InitializeParams, .result = InitializeResult };
+    pub const shutdown = Request{};
+};
+
+const Notification = struct {
+    /// If a method accepts parameters, this optional is the LSP data type of them.  null means it is called
+    /// without parameters.
+    params: ?type = null,
+
+    pub const CallResult = void;
+
+    pub fn callMethod(
+        allocator: std.mem.Allocator,
+        backend: anytype,
+        comptime method_name: []const u8,
+        params: ?std.json.Value,
+    ) !CallResult {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const method = getDecl(@TypeOf(backend), method_name);
+        // TODO: add support for method calls that use `self: Backend` in addition to `self: *Backend`.
+        try @call(
+            .auto,
+            method,
+            if (@field(Notification, method_name).params) |Params|
+                .{ backend, try std.json.parseFromValueLeaky(Params, arena.allocator(), params orelse return error.InvalidParams, .{}) }
+            else
+                .{backend},
+        );
+    }
+
+    pub const initialized = Notification{ .params = InitializeParams };
+    pub const @"textDocument/didOpen" = Notification{ .params = DidOpenTextDocumentParams };
+    pub const exit = Notification{};
+};
+
+fn logIfErr(value: anytype, comptime additional_format: []const u8, args: anytype) @TypeOf(value) {
+    const T = @TypeOf(value);
+    const tinfo = @typeInfo(T);
+    switch (tinfo) {
+        .error_union => {
+            if (value) |_| {} else |this_err| {
+                const err: anyerror = this_err;
+                switch (err) {
+                    error.NotImplemented => std.log.debug("Caught error '{}' while " ++ additional_format, .{err} ++ args),
+                    else => std.log.err("Caught error '{}' while " ++ additional_format, .{err} ++ args),
+                }
+            }
+        },
+        else => {},
+    }
+    return value;
+}
+
+const JsonString = struct {
+    value: []const u8,
+
+    pub fn jsonStringify(self: JsonString, write_stream: anytype) !void {
+        try write_stream.beginWriteRaw();
+        _ = try write_stream.stream.write(self.value);
+        write_stream.endWriteRaw();
+    }
 };
 
 /// Read LSP messages from `in` in a loop and dispatch them to `backend` until `backend` returns `error.Break` or
 /// the stream ends.  The stream ending before a break is a fatal error.
 pub fn serve(allocator: std.mem.Allocator, in: std.io.AnyReader, out: std.io.AnyWriter, backend: anytype) !void {
-    _ = out;
+    std.log.info("Starting language serve loop.", .{});
     while (true) {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
-        const header = try HeaderPart.parse(in);
-        const buf = allocator.alloc(u8, header.content_length);
-        defer allocator.free(buf);
-        if (in.readAll(buf) < buf.len) {
-            std.log.err("End of stream reached before Content-Length of {} bytes was read.", .{buf.len});
+        const header = logIfErr(HeaderPart.parse(in), "parsing header", .{}) catch continue;
+        std.log.debug("Header: {any}", .{header});
+        const content_buf = logIfErr(allocator.alloc(u8, header.content_length), "allocating content buffer", .{}) catch continue;
+        defer allocator.free(content_buf);
+        if (logIfErr(in.readAll(content_buf), "reading {} bytes of content", .{content_buf.len}) catch continue < content_buf.len) {
+            std.log.err("End of stream reached before Content-Length of {} bytes was read.", .{content_buf.len});
             return error.EndOfStream;
         }
-        var scanner = std.json.Scanner.initCompleteInput(arena.allocator(), buf);
-        const json_value = try std.json.Value.jsonParse(arena.allocator(), &scanner, .{ .max_value_len = buf.len });
-        const content = try std.json.parseFromValueLeaky(ContentPart, arena.allocator(), json_value, .{});
+        std.log.debug("Incoming message content:\n{s}", .{content_buf});
+        var scanner = std.json.Scanner.initCompleteInput(arena.allocator(), content_buf);
+        const json_value = logIfErr(std.json.Value.jsonParse(arena.allocator(), &scanner, .{ .max_value_len = content_buf.len }), "parsing dynamic JSON Value from content", .{}) catch continue;
+        const content = logIfErr(std.json.parseFromValueLeaky(ContentPart, arena.allocator(), json_value, .{}), "parsing dynamic JSON into ContentPart struct", .{}) catch continue;
         switch (content) {
             .notification => |notification| {
-                callMethod(void, callMethodNotification, arena.allocator(), backend, notification.method, notification.params) catch |err|
-                    std.log.err("Caught error '{}' while processing '{s}' notification", .{ err, notification.method });
+                std.log.info("Processing [-] '{s}' notification", .{notification.method});
+                logIfErr(callMethod(Notification, arena.allocator(), backend, notification.method, notification.params), "processing '{s}' notification", .{notification.method}) catch continue;
                 if (std.mem.eql(u8, "exit", notification.method)) {
                     break;
                 }
             },
             .request => |request| {
+                std.log.info("Processing [{}] '{s}' request", .{ request.id, request.method });
                 const response = ResponseMessage.init(
                     request.id,
-                    callMethod(?[]const u8, callMethodRequest, arena.allocator(), backend, request.method, request.params),
+                    callMethod(Request, arena.allocator(), backend, request.method, request.params),
                 );
-                _ = response;
+                std.log.info("Responding [{}] '{s}'", .{ request.id, request.method });
+                var response_buf = std.ArrayList(u8).init(allocator);
+                defer response_buf.deinit();
+                logIfErr(std.json.stringify(response, .{ .emit_null_optional_fields = false }, response_buf.writer()), "stringifying response to '{s}' request", .{request.method}) catch continue;
+                std.log.debug("Outgoing message content:\n{s}", .{response_buf.items});
+                logIfErr(out.print("Content-Length: {}\r\n\r\n{s}", .{ response_buf.items.len, response_buf.items }), "printing '{s}' response", .{request.method}) catch continue;
+                std.log.debug("Content-Length: {}\r\n\r\n{s}", .{ response_buf.items.len, response_buf.items });
             },
             .response => |response| {
                 _ = response;
             },
         }
-        break;
     }
+    std.log.info("Language serve loop exited normally.", .{});
 }
 
-/// Returns an error, or void.
-fn callMethodNotification(
-    allocator: std.mem.Allocator,
-    backend: anytype,
-    comptime method_name: []const u8,
-    params: ?std.json.Value,
-) !void {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    const Backend = @TypeOf(backend);
-    const method = @field(Backend, method_name);
-    try @call(
-        .auto,
-        method,
-        if (@field(Method, method_name).params) |Params|
-            .{ backend, try std.json.parseFromValueLeaky(Params, arena.allocator(), params, .{}) }
-        else
-            .{backend},
-    );
+fn getDecl(comptime T: type, comptime name: []const u8) @TypeOf(
+    @field(switch (@typeInfo(T)) {
+        .optional => |tinfo| tinfo.child,
+        .pointer => |tinfo| tinfo.child,
+        else => T,
+    }, name),
+) {
+    return @field(switch (@typeInfo(T)) {
+        .optional => |tinfo| tinfo.child,
+        .pointer => |tinfo| tinfo.child,
+        else => T,
+    }, name);
 }
 
-/// Returns an error, the stringified result, or null.  The caller owns the returned memory.
-fn callMethodRequest(
-    allocator: std.mem.Allocator,
-    backend: anytype,
-    comptime method_name: []const u8,
-    params: ?std.json.Value,
-) ![]const u8 {
-    const Backend = @TypeOf(backend);
-    const method = @field(Backend, method_name);
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-    if (@field(Method, method_name).result) |Result| {
-        const result: Result = try @call(
-            .auto,
-            method,
-            if (@field(Method, method_name).params) |Params|
-                .{ backend, try std.json.parseFromValueLeaky(Params, arena.allocator(), params orelse return error.InvalidParams, .{}) }
-            else
-                .{backend},
-        );
-        var buf = std.ArrayList(u8).init(allocator);
-        defer buf.deinit();
-        try std.json.stringify(result, .{ .emit_null_optional_fields = false }, buf.writer());
-        return try buf.toOwnedSlice();
-    } else {
-        try @call(
-            .auto,
-            method,
-            if (@field(Method, method_name).params) |Params|
-                .{ backend, try std.json.parseFromValueLeaky(Params, arena.allocator(), params, .{}) }
-            else
-                .{backend},
-        );
-        return "null";
-    }
+test getDecl {
+    const T = struct {
+        pub fn x() usize {
+            return 5;
+        }
+    };
+    try std.testing.expectEqual(@as(usize, 5), @call(.auto, getDecl(T, "x"), .{}));
+    try std.testing.expectEqual(@as(usize, 5), @call(.auto, getDecl(?T, "x"), .{}));
+    try std.testing.expectEqual(@as(usize, 5), @call(.auto, getDecl(*T, "x"), .{}));
 }
 
 /// Matches method_name to the methods declared in the Method type, and then uses an inline switch to promote that
 /// string to a comptime field name that can be used to resolve the backend function to call and the Params and
 /// Result types by the callHandler.
 fn callMethod(
-    comptime Result: type,
-    comptime callHandler: anytype,
+    comptime Method: type,
     allocator: std.mem.Allocator,
     backend: anytype,
     method_name: []const u8,
     params: ?std.json.Value,
-) !Result {
+) !Method.CallResult {
     const Backend = @TypeOf(backend);
     if (std.meta.stringToEnum(std.meta.DeclEnum(Method), method_name)) |method_rt| {
         switch (method_rt) {
             inline else => |method_ct| {
                 const method_name_ct = @tagName(method_ct);
                 if (std.meta.hasMethod(Backend, method_name_ct)) {
-                    return callHandler(allocator, backend, method_name_ct, params);
+                    return Method.callMethod(allocator, backend, method_name_ct, params);
                 } else {
                     return error.NotImplemented;
                 }
@@ -773,6 +620,10 @@ pub const DidChangeWatchedFilesClientCapabilities = struct {
     relativePatternSupport: ?bool = null,
 };
 
+pub const DidOpenTextDocumentParams = struct {
+    textDocument: TextDocumentItem,
+};
+
 pub const DocumentColorOptions = struct {
     workDoneProgress: ?bool = null,
 };
@@ -854,6 +705,8 @@ pub const DocumentSymbolOptions = struct {
     workDoneProgress: ?bool = null,
     label: ?[]const u8 = null,
 };
+
+pub const DocumentUri = []const u8;
 
 pub const ErrorCodes = enum(i32) {
     ParseError = -32700,
@@ -1035,6 +888,17 @@ pub const MarkupKind = enum {
 pub const MessageId = union(enum) {
     integer: i32,
     string: []const u8,
+    pub fn format(
+        self: MessageId,
+        comptime _: []const u8,
+        _: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        switch (self) {
+            .integer => |integer| try writer.print("{}", .{integer}),
+            .string => |string| try writer.print("{s}", .{string}),
+        }
+    }
     pub const jsonParseFromValue = jsonParseFromValueUnion(@This());
     pub const jsonStringify = jsonStringifyUnion;
 };
@@ -1162,7 +1026,7 @@ pub const ResponseMessage = struct {
     jsonrpc: []const u8,
     id: MessageId,
     /// JSON stringified result for the matching request's method.
-    result: ?[]const u8 = null,
+    result: ?JsonString = null,
     @"error": ?ResponseError = null,
 
     pub fn init(id: MessageId, payload: anytype) ResponseMessage {
@@ -1171,11 +1035,11 @@ pub const ResponseMessage = struct {
             .id = id,
         };
         if (payload) |result| {
-            response.result = result;
+            response.result = .{ .value = result };
         } else |err| {
             response.@"error" = .{
-                .code = if (std.meta.stringToEnum(ErrorCodes, @tagName(err))) |code| code else .InternalError,
-                .message = @tagName(err),
+                .code = if (std.meta.stringToEnum(ErrorCodes, @errorName(err))) |code| code else .InternalError,
+                .message = @errorName(err),
             };
         }
         return response;
@@ -1395,6 +1259,13 @@ pub const TextDocumentClientCapabilities = struct {
     inlineValue: ?InlineValueClientCapabilities = null,
     inlayHint: InlayHintClientCapabilities,
     diagnostics: ?DiagnosticsClientCapabilities = null,
+};
+
+pub const TextDocumentItem = struct {
+    uri: DocumentUri,
+    languageId: []const u8,
+    verison: u32,
+    text: []const u8,
 };
 
 pub const TextDocumentSyncClientCapabilities = struct {
@@ -1667,10 +1538,9 @@ test {
     try std.testing.expectEqualStrings("{\"union_value\":5,\"optional\":8}", out.items);
 }
 
-test callMethodNotification {
+test {
     try callMethod(
-        void,
-        callMethodNotification,
+        Notification,
         std.testing.allocator,
         struct {
             pub fn exit(_: @This()) !void {}
@@ -1679,8 +1549,7 @@ test callMethodNotification {
         null,
     );
     try std.testing.expectError(error.InvalidParams, callMethod(
-        void,
-        callMethodNotification,
+        Notification,
         std.testing.allocator,
         struct {
             pub fn exit(_: @This()) !void {
@@ -1691,8 +1560,7 @@ test callMethodNotification {
         null,
     ));
     try std.testing.expectError(error.NotImplemented, callMethod(
-        void,
-        callMethodNotification,
+        Notification,
         std.testing.allocator,
         struct {}{},
         "exit",
@@ -1700,7 +1568,7 @@ test callMethodNotification {
     ));
 }
 
-test callMethodRequest {
+test {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     errdefer arena.deinit();
     const allocator = arena.allocator();
@@ -1708,8 +1576,7 @@ test callMethodRequest {
     const initialize_s = "{\"capabilities\":{\"general\":{\"positionEncodings\":[\"utf-8\",\"utf-32\",\"utf-16\"]},\"textDocument\":{\"codeAction\":{\"codeActionLiteralSupport\":{\"codeActionKind\":{\"valueSet\":[\"\",\"quickfix\",\"refactor\",\"refactor.extract\",\"refactor.inline\",\"refactor.rewrite\",\"source\",\"source.organizeImports\"]}}},\"completion\":{\"completionItem\":{\"deprecatedSupport\":true,\"insertReplaceSupport\":true,\"resolveSupport\":{\"properties\":[\"documentation\",\"detail\",\"additionalTextEdits\"]},\"snippetSupport\":true,\"tagSupport\":{\"valueSet\":[1]}},\"completionItemKind\":{}},\"hover\":{\"contentFormat\":[\"markdown\"]},\"inlayHint\":{\"dynamicRegistration\":false},\"publishDiagnostics\":{\"versionSupport\":true},\"rename\":{\"dynamicRegistration\":false,\"honorsChangeAnnotations\":false,\"prepareSupport\":true},\"signatureHelp\":{\"signatureInformation\":{\"activeParameterSupport\":true,\"documentationFormat\":[\"markdown\"],\"parameterInformation\":{\"labelOffsetSupport\":true}}}},\"window\":{\"workDoneProgress\":true},\"workspace\":{\"applyEdit\":true,\"configuration\":true,\"didChangeConfiguration\":{\"dynamicRegistration\":false},\"executeCommand\":{\"dynamicRegistration\":false},\"inlayHint\":{\"refreshSupport\":false},\"symbol\":{\"dynamicRegistration\":false},\"workspaceEdit\":{\"documentChanges\":true,\"failureHandling\":\"abort\",\"normalizesLineEndings\":false,\"resourceOperations\":[\"create\",\"rename\",\"delete\"]},\"workspaceFolders\":true}},\"clientInfo\":{\"name\":\"helix\",\"version\":\"23.05 (7f5940be)\"},\"processId\":177984,\"rootPath\":\"/home/tsmanner/terrasa-notes\",\"rootUri\":null,\"workspaceFolders\":[]}";
     var scanner = std.json.Scanner.initCompleteInput(allocator, initialize_s);
     try std.testing.expectEqualStrings("{\"capabilities\":{}}", try callMethod(
-        []const u8,
-        callMethodRequest,
+        Request,
         allocator,
         struct {
             pub fn initialize(_: @This(), _: InitializeParams) !InitializeResult {
@@ -1722,8 +1589,7 @@ test callMethodRequest {
     _ = arena.reset(.free_all);
 
     try std.testing.expectError(error.InvalidParams, callMethod(
-        []const u8,
-        callMethodRequest,
+        Request,
         allocator,
         struct {
             pub fn initialize(_: @This(), _: InitializeParams) !InitializeResult {
@@ -1736,8 +1602,7 @@ test callMethodRequest {
     _ = arena.reset(.free_all);
 
     try std.testing.expectError(error.NotImplemented, callMethod(
-        []const u8,
-        callMethodRequest,
+        Request,
         allocator,
         struct {}{},
         "initialize",
@@ -1746,8 +1611,7 @@ test callMethodRequest {
     _ = arena.reset(.free_all);
 
     try std.testing.expectEqualStrings("null", try callMethod(
-        []const u8,
-        callMethodRequest,
+        Request,
         allocator,
         struct {
             pub fn shutdown(_: @This()) !void {}
@@ -1758,8 +1622,7 @@ test callMethodRequest {
     _ = arena.reset(.free_all);
 
     try std.testing.expectError(error.InvalidParams, callMethod(
-        []const u8,
-        callMethodRequest,
+        Request,
         allocator,
         struct {
             pub fn shutdown(_: @This()) !void {
@@ -1772,8 +1635,7 @@ test callMethodRequest {
     _ = arena.reset(.free_all);
 
     try std.testing.expectError(error.NotImplemented, callMethod(
-        []const u8,
-        callMethodRequest,
+        Request,
         allocator,
         struct {}{},
         "shutdown",

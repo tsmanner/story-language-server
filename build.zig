@@ -14,12 +14,19 @@ pub fn build(b: *std.Build) void {
 
     const zeit = b.dependency("zeit", .{ .target = target, .optimize = optimize }).module("zeit");
 
+    const lsp = b.addModule("lsp", .{
+        .root_source_file = b.path("lsp.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const exe = b.addExecutable(.{
         .name = "sls",
         .root_source_file = b.path("sls.zig"),
         .target = target,
         .optimize = optimize,
     });
+    exe.root_module.addImport("lsp", lsp);
     exe.root_module.addImport("zeit", zeit);
     b.installArtifact(exe);
 
@@ -28,6 +35,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    tests.root_module.addImport("lsp", lsp);
     tests.root_module.addImport("zeit", zeit);
 
     const run_tests = b.addRunArtifact(tests);

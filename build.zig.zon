@@ -11,7 +11,7 @@
         "build.zig",
         "build.zig.zon",
         "sls.zig",
-        "lsp/schema.zig",
+        "lsp.zig",
         "sls/data.zig",
     },
 }
