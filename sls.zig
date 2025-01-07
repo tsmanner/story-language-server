@@ -13,9 +13,9 @@ fn logFn(
     args: anytype,
 ) void {
     if (log_file) |file| {
-        if (local_timezone) |tz| {
+        if (local_timezone) |*tz| {
             const now = zeit.instant(.{}) catch return;
-            now.in(&tz).time().strftime(file.writer(), "[%d-%m-%Y %H:%M:%S %Z] ") catch return;
+            now.in(tz).time().strftime(file.writer(), "[%d-%m-%Y %H:%M:%S %Z] ") catch return;
         } else {
             file.writer().print("[{:>11}] ", .{std.time.timestamp()}) catch return;
         }
@@ -28,7 +28,7 @@ fn logFn(
 
 pub const std_options = std.Options{
     .logFn = logFn,
-    .log_level = .info,
+    .log_level = .debug,
 };
 
 pub const Server = struct {
@@ -38,55 +38,18 @@ pub const Server = struct {
     pub fn initialize(_: *Self, _: lsp.InitializeParams) !lsp.InitializeResult {
         return .{
             .serverInfo = .{ .name = "sls", .version = "0.0.0" },
-            .capabilities = .{},
+            .capabilities = .{
+                .definitionProvider = .{ .boolean = true },
+            },
         };
     }
 
-    pub fn shutdown(_: *Self) !void {}
+    pub fn @"textDocument/definition"(_: *Self, params: lsp.DefinitionParams) !lsp.DefinitionResult {
+        std.log.info("Going to definition of symbol at {any}", .{params.position});
+        return error.NotImplementedYet;
+    }
 
-    // fn processRequest(self: Self, allocator: std.mem.Allocator, id: schema.Id, request: schema.Request) !void {
-    //     switch (request) {
-    //         .initialize => |init| {
-    //             _ = init;
-    //             const response = schema.Message{
-    //                 .jsonrpc = "2.0",
-    //                 .id = id,
-    //                 .payload = .{ .response = .{ .initialize = .{
-    //                     .serverInfo = .{ .name = "sls", .version = "0.0.0" },
-    //                     .capabilities = .{},
-    //                 } } },
-    //             };
-    //             const message = try std.json.stringifyAlloc(allocator, response, .{
-    //                 .emit_null_optional_fields = false,
-    //             });
-    //             defer allocator.free(message);
-    //             std.log.info("[{?}] ←server  {s}", .{ id, message });
-    //             try self.output.print("Content-Length: {}\r\n\r\n{s}", .{ message.len, message });
-    //         },
-    //         .initialized => {
-    //             std.log.info("[{?}]  server  Client initialized", .{id});
-    //         },
-    //         .@"textDocument/didOpen" => |doc| {
-    //             std.log.info("[{?}]  server  textDocument/didOpen notification", .{id});
-    //             _ = doc;
-    //             // try story.parse(doc.uri, doc.text);
-    //         },
-    //         .shutdown => {
-    //             const response = schema.Message{
-    //                 .jsonrpc = "2.0",
-    //                 .id = id,
-    //                 .payload = .{ .response = .{ .none = .{} } },
-    //             };
-    //             const message = try std.json.stringifyAlloc(allocator, response, .{
-    //                 .emit_null_optional_fields = false,
-    //             });
-    //             defer allocator.free(message);
-    //             std.log.info("[{?}]  server  Shut down", .{id});
-    //             std.log.info("[{?}] ←server  {s}", .{ id, message });
-    //             try self.output.print("Content-Length: {}\r\n\r\n{s}", .{ message.len, message });
-    //         },
-    //     }
-    // }
+    pub fn shutdown(_: *Self) !void {}
 };
 
 fn initLogFile(allocator: std.mem.Allocator) !void {
@@ -138,96 +101,6 @@ pub fn main() !u8 {
 
     return 0;
 }
-
-const initialize_s =
-    "Content-Length: 1557\r\n" ++
-    "\r\n" ++
-    "{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{\"capabilities\":{\"general\":{\"positionEncodings\":[\"utf-8\",\"utf-32\",\"utf-16\"]},\"textDocument\":{\"codeAction\":{\"codeActionLiteralSupport\":{\"codeActionKind\":{\"valueSet\":[\"\",\"quickfix\",\"refactor\",\"refactor.extract\",\"refactor.inline\",\"refactor.rewrite\",\"source\",\"source.organizeImports\"]}}},\"completion\":{\"completionItem\":{\"deprecatedSupport\":true,\"insertReplaceSupport\":true,\"resolveSupport\":{\"properties\":[\"documentation\",\"detail\",\"additionalTextEdits\"]},\"snippetSupport\":true,\"tagSupport\":{\"valueSet\":[1]}},\"completionItemKind\":{}},\"hover\":{\"contentFormat\":[\"markdown\"]},\"inlayHint\":{\"dynamicRegistration\":false},\"publishDiagnostics\":{\"versionSupport\":true},\"rename\":{\"dynamicRegistration\":false,\"honorsChangeAnnotations\":false,\"prepareSupport\":true},\"signatureHelp\":{\"signatureInformation\":{\"activeParameterSupport\":true,\"documentationFormat\":[\"markdown\"],\"parameterInformation\":{\"labelOffsetSupport\":true}}}},\"window\":{\"workDoneProgress\":true},\"workspace\":{\"applyEdit\":true,\"configuration\":true,\"didChangeConfiguration\":{\"dynamicRegistration\":false},\"executeCommand\":{\"dynamicRegistration\":false},\"inlayHint\":{\"refreshSupport\":false},\"symbol\":{\"dynamicRegistration\":false},\"workspaceEdit\":{\"documentChanges\":true,\"failureHandling\":\"abort\",\"normalizesLineEndings\":false,\"resourceOperations\":[\"create\",\"rename\",\"delete\"]},\"workspaceFolders\":true}},\"clientInfo\":{\"name\":\"helix\",\"version\":\"23.05 (7f5940be)\"},\"processId\":177984,\"rootPath\":\"/home/tsmanner/terrasa-notes\",\"rootUri\":null,\"workspaceFolders\":[]},\"id\":0}";
-
-const initialize_s2 =
-    "Content-Length: 1590\r\n" ++
-    "\r\n" ++
-    "{\"jsonrpc\":\"2.0\",\"method\":\"initialize\",\"params\":{\"capabilities\":{\"general\":{\"positionEncodings\":[\"utf-8\",\"utf-32\",\"utf-16\"]},\"textDocument\":{\"codeAction\":{\"codeActionLiteralSupport\":{\"codeActionKind\":{\"valueSet\":[\"\",\"quickfix\",\"refactor\",\"refactor.extract\",\"refactor.inline\",\"refactor.rewrite\",\"source\",\"source.organizeImports\"]}}},\"completion\":{\"completionItem\":{\"deprecatedSupport\":true,\"insertReplaceSupport\":true,\"resolveSupport\":{\"properties\":[\"documentation\",\"detail\",\"additionalTextEdits\"]},\"snippetSupport\":true,\"tagSupport\":{\"valueSet\":[1]}},\"completionItemKind\":{}},\"hover\":{\"contentFormat\":[\"markdown\"]},\"inlayHint\":{\"dynamicRegistration\":false},\"publishDiagnostics\":{\"versionSupport\":true},\"rename\":{\"dynamicRegistration\":false,\"honorsChangeAnnotations\":false,\"prepareSupport\":true},\"signatureHelp\":{\"signatureInformation\":{\"activeParameterSupport\":true,\"documentationFormat\":[\"markdown\"],\"parameterInformation\":{\"labelOffsetSupport\":true}}}},\"window\":{\"workDoneProgress\":true},\"workspace\":{\"applyEdit\":true,\"configuration\":true,\"didChangeConfiguration\":{\"dynamicRegistration\":false},\"executeCommand\":{\"dynamicRegistration\":false},\"inlayHint\":{\"refreshSupport\":false},\"symbol\":{\"dynamicRegistration\":false},\"workspaceEdit\":{\"documentChanges\":true,\"failureHandling\":\"abort\",\"normalizesLineEndings\":false,\"resourceOperations\":[\"create\",\"rename\",\"delete\"]},\"workspaceFolders\":true}},\"clientInfo\":{\"name\":\"helix\",\"version\":\"23.05 (7f5940be)\"},\"processId\":177984,\"rootPath\":\"/home/tsmanner/terrasa-notes\",\"rootUri\":\"file:///home/tsmanner/terrasa-notes\",\"workspaceFolders\":[]},\"id\":0}";
-
-const initialized_s =
-    "Content-Length: 52\r\n" ++
-    "\r\n" ++
-    "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}\"";
-
-const shutdown_s =
-    "Content-Length: 44\r\n" ++
-    "\r\n" ++
-    "{\"jsonrpc\":\"2.0\",\"method\":\"shutdown\",\"id\":1}";
-
-// test "Server.parseHeader" {
-//     var buf = std.io.fixedBufferStream(initialize_s);
-//     var server = initServer(
-//         buf.reader(),
-//         std.io.null_writer,
-//     );
-//     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-//     defer arena.deinit();
-//     const allocator = arena.allocator();
-//     const h = try server.parseHeader(allocator);
-//     try std.testing.expectEqual(@as(usize, 1557), h.content_length);
-//     try std.testing.expectEqualStrings("utf-8", h.content_type);
-// }
-
-// test "Server.parseMessage" {
-//     var buf = std.io.fixedBufferStream(initialize_s2);
-//     var server = initServer(
-//         buf.reader(),
-//         std.io.null_writer,
-//     );
-//     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-//     const allocator = arena.allocator();
-//     defer arena.deinit();
-//     const message = try server.parseMessage(allocator, try server.parseHeader(allocator));
-//     try std.testing.expectEqualStrings("2.0", message.jsonrpc);
-//     try std.testing.expectEqual(@as(?u32, 0), message.id.value);
-//     const init = message.payload.request.initialize;
-//     try std.testing.expectEqualDeep(
-//         init.capabilities.general.positionEncodings,
-//         &[_]schema.Position.Encoding{ .@"utf-8", .@"utf-32", .@"utf-16" },
-//     );
-//     try std.testing.expectEqualDeep(
-//         init.capabilities.textDocument.codeAction.codeActionLiteralSupport.codeActionKind.valueSet,
-//         &[_][]const u8{ "", "quickfix", "refactor", "refactor.extract", "refactor.inline", "refactor.rewrite", "source", "source.organizeImports" },
-//     );
-//     try std.testing.expectEqualStrings(
-//         init.rootPath.?,
-//         "/home/tsmanner/terrasa-notes",
-//     );
-//     if (init.rootUri) |root_uri| {
-//         try std.testing.expectEqualDeep(
-//             try std.Uri.parse("file:///home/tsmanner/terrasa-notes"),
-//             root_uri.value,
-//         );
-//     } else {
-//         return error.UnexpectedNullOptional;
-//     }
-//     // Initialized
-//     buf = std.io.fixedBufferStream(initialized_s);
-//     server.input = buf.reader();
-//     _ = try server.parseMessage(allocator, try server.parseHeader(allocator));
-//     // Shutdown
-//     buf = std.io.fixedBufferStream(shutdown_s);
-//     server.input = buf.reader();
-//     _ = try server.parseMessage(allocator, try server.parseHeader(allocator));
-// }
-
-// test "Server.processRequest" {
-//     var buf = std.io.fixedBufferStream(initialize_s2);
-//     var server = initServer(
-//         buf.reader(),
-//         std.io.null_writer,
-//     );
-//     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-//     const allocator = arena.allocator();
-//     defer arena.deinit();
-//     const message = try server.parseMessage(allocator, try server.parseHeader(allocator));
-//     try server.processRequest(std.testing.allocator, schema.Id{ .value = 0 }, message.payload.request);
-// }
 
 test {
     std.testing.refAllDeclsRecursive(@This());

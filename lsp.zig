@@ -63,6 +63,8 @@ pub const HeaderPart = struct {
                 // line.len - 1 because LSP requires \r\n line endings...
                 content_type = line[14 .. line.len - 1];
             }
+        } else {
+            return error.EndOfStream;
         }
         if (content_length == null) {
             return error.HeaderPartMissingContentLength;
@@ -211,6 +213,7 @@ const Request = struct {
 
     pub const initialize = Request{ .params = InitializeParams, .result = InitializeResult };
     pub const shutdown = Request{};
+    pub const @"textDocument/definition" = Request{ .params = DefinitionParams, .result = DefinitionResult };
 };
 
 const Notification = struct {
@@ -229,7 +232,7 @@ const Notification = struct {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const method = getDecl(@TypeOf(backend), method_name);
-        // TODO: add support for method calls that use `self: Backend` in addition to `self: *Backend`.
+        // TODO: add support for method calls that use `self: Backend` or omit self, in addition to `self: *Backend`.
         try @call(
             .auto,
             method,
@@ -263,6 +266,7 @@ fn logIfErr(value: anytype, comptime additional_format: []const u8, args: anytyp
     return value;
 }
 
+/// A string containing JSON data.  It can be streamed, both in and out, as-is.
 const JsonString = struct {
     value: []const u8,
 
@@ -280,7 +284,13 @@ pub fn serve(allocator: std.mem.Allocator, in: std.io.AnyReader, out: std.io.Any
     while (true) {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
-        const header = logIfErr(HeaderPart.parse(in), "parsing header", .{}) catch continue;
+        const header = logIfErr(HeaderPart.parse(in), "parsing header", .{}) catch |err| switch (err) {
+            error.EndOfStream => {
+                std.log.info("End of stream, exiting.", .{});
+                break;
+            },
+            else => continue,
+        };
         std.log.debug("Header: {any}", .{header});
         const content_buf = logIfErr(allocator.alloc(u8, header.content_length), "allocating content buffer", .{}) catch continue;
         defer allocator.free(content_buf);
@@ -310,8 +320,8 @@ pub fn serve(allocator: std.mem.Allocator, in: std.io.AnyReader, out: std.io.Any
                 var response_buf = std.ArrayList(u8).init(allocator);
                 defer response_buf.deinit();
                 logIfErr(std.json.stringify(response, .{ .emit_null_optional_fields = false }, response_buf.writer()), "stringifying response to '{s}' request", .{request.method}) catch continue;
-                std.log.debug("Outgoing message content:\n{s}", .{response_buf.items});
-                logIfErr(out.print("Content-Length: {}\r\n\r\n{s}", .{ response_buf.items.len, response_buf.items }), "printing '{s}' response", .{request.method}) catch continue;
+                // Failure to communicate to the client is a fatal error.
+                try logIfErr(out.print("Content-Length: {}\r\n\r\n{s}", .{ response_buf.items.len, response_buf.items }), "printing '{s}' response", .{request.method});
                 std.log.debug("Content-Length: {}\r\n\r\n{s}", .{ response_buf.items.len, response_buf.items });
             },
             .response => |response| {
@@ -585,6 +595,21 @@ pub const DefinitionClientCapabilities = struct {
 
 pub const DefinitionOptions = struct {
     workDoneProgress: ?bool = null,
+};
+
+pub const DefinitionParams = struct {
+    textDocument: TextDocumentIdentifier,
+    position: Position,
+    workDoneToken: ?ProgressToken = null,
+    partialResultToken: ?ProgressToken = null,
+};
+
+pub const DefinitionResult = union(enum) {
+    location: Location,
+    locations: []const Location,
+    locationLinks: []const LocationLink,
+    pub const jsonParseFromValue = jsonParseFromValueUnion;
+    pub const jsonStringify = jsonStringifyUnion;
 };
 
 pub const DiagnosticRegistrationOptions = struct {
@@ -874,6 +899,18 @@ pub const LinkedEditingRangeRegistrationOptions = struct {
     id: ?[]const u8 = null,
 };
 
+pub const Location = struct {
+    uri: DocumentUri,
+    range: Range,
+};
+
+pub const LocationLink = struct {
+    originSelectionRange: ?Range = null,
+    targetUri: DocumentUri,
+    targetRange: Range,
+    targetSelectionRange: Range,
+};
+
 pub const MarkdownClientCapabilities = struct {
     parser: []const u8,
     version: ?[]const u8 = null,
@@ -948,6 +985,11 @@ pub const NotificationMessage = struct {
     params: ?std.json.Value = null,
 };
 
+pub const Position = struct {
+    line: u32,
+    character: u32,
+};
+
 pub const PositionEncodingKind = enum {
     @"utf-8",
     @"utf-16",
@@ -974,6 +1016,11 @@ pub const PublishDiagnosticsClientCapabilities = struct {
     versionSupport: ?bool = null,
     codeDescriptionSupport: ?bool = null,
     dataSupport: ?bool = null,
+};
+
+pub const Range = struct {
+    start: Position,
+    end: Position,
 };
 
 pub const ReferencesClientCapabilities = struct {
@@ -1259,6 +1306,10 @@ pub const TextDocumentClientCapabilities = struct {
     inlineValue: ?InlineValueClientCapabilities = null,
     inlayHint: InlayHintClientCapabilities,
     diagnostics: ?DiagnosticsClientCapabilities = null,
+};
+
+pub const TextDocumentIdentifier = struct {
+    uri: DocumentUri,
 };
 
 pub const TextDocumentItem = struct {
