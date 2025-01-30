@@ -32,10 +32,71 @@ pub const std_options = std.Options{
 };
 
 pub const Server = struct {
+    const Files = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8));
+
+    allocator: std.mem.Allocator,
+    /// Maps lowercase filename to relative file paths
+    files: Files = .{},
+
     pub const Self = @This();
 
+    pub fn deinit(self: *Self) void {
+        var iter = self.files.iterator();
+        while (iter.next()) |entry| {
+            for (entry.value_ptr.items) |path| {
+                self.allocator.free(path);
+            }
+            entry.value_ptr.deinit(self.allocator);
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.files.deinit(self.allocator);
+    }
+
+    fn addFile(self: *Self, name: []const u8, path: []const u8) !void {
+        const lower: []const u8 = try std.ascii.allocLowerString(self.allocator, name);
+        var paths = try self.files.getOrPut(self.allocator, lower);
+        if (paths.found_existing) {
+            self.allocator.free(lower);
+        }
+        try paths.value_ptr.append(self.allocator, try self.allocator.dupe(u8, path));
+    }
+
+    fn populateFiles(self: *Self, dir: std.fs.Dir) !void {
+        var iter = try dir.walk(self.allocator);
+        while (try iter.next()) |entry| {
+            switch (entry.kind) {
+                .file => {
+                    try self.addFile(entry.basename, entry.path);
+                },
+                .sym_link => {
+                    var buf: [1024]u8 = undefined;
+                    var path = try dir.readLink(entry.basename, &buf);
+                    while (true) {
+                        switch ((try dir.statFile(path)).kind) {
+                            // If the link points to a file, process it as a file.
+                            .file => {
+                                try self.addFile(entry.basename, path);
+                                break;
+                            },
+                            .sym_link => {
+                                path = try dir.readLink(path, &buf);
+                                continue;
+                            },
+                            else => {},
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
     /// SLS currently doesn't do anything with self or params on initialization.
-    pub fn initialize(_: *Self, _: lsp.InitializeParams) !lsp.InitializeResult {
+    pub fn initialize(self: *Self, params: lsp.InitializeParams) !lsp.InitializeResult {
+        if (params.rootUri.value) |root_uri| {
+            const uri = try std.Uri.parse(root_uri);
+            try self.populateFiles(try std.fs.openDirAbsolute(uri.path.raw, .{ .iterate = true }));
+        }
         return .{
             .serverInfo = .{ .name = "sls", .version = "0.0.0" },
             .capabilities = .{
@@ -46,11 +107,19 @@ pub const Server = struct {
 
     pub fn @"textDocument/definition"(_: *Self, params: lsp.DefinitionParams) !lsp.DefinitionResult {
         std.log.info("Going to definition of symbol at {any}", .{params.position});
+        // Step 1: get and maintain a listing of all files in the directory tree.
+        // Step 2: figure out what symbol it is - which means implement a `texDocument/didOpen` function
+        //         and a `textDocument/didChange` function.
         return error.NotImplementedYet;
     }
 
     pub fn shutdown(_: *Self) !void {}
 };
+
+test {
+    var server: Server = .{ .allocator = std.testing.allocator };
+    defer server.deinit();
+}
 
 fn initLogFile(allocator: std.mem.Allocator) !void {
     var parts = std.ArrayList([]const u8).init(allocator);
@@ -94,7 +163,7 @@ pub fn main() !u8 {
     try initTimeZone(allocator);
     defer if (local_timezone) |tz| tz.deinit();
 
-    var backend = Server{};
+    var backend: Server = .{ .allocator = allocator };
     std.log.info("Initiating sls!", .{});
     try lsp.serve(allocator, std.io.getStdIn().reader().any(), std.io.getStdOut().writer().any(), &backend);
     std.log.info("Exiting sls!", .{});
