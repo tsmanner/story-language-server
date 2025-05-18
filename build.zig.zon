@@ -1,10 +1,11 @@
 .{
-    .name = "sls",
+    .name = .sls,
     .version = "0.0.0",
+    .fingerprint = 0xa9b20b36aec99331,
     .dependencies = .{
         .zeit = .{
-            .url = "https://github.com/rockorager/zeit/archive/refs/tags/v0.4.4.tar.gz",
-            .hash = "12204b653c90b503f89e2f1a73c4754b83fb7275c100c81872deaca12c9f17e334ec",
+            .url = "https://github.com/rockorager/zeit/archive/refs/tags/v0.6.0.tar.gz",
+            .hash = "zeit-0.0.0-5I6bk_pZAgB03N1p1GmVOZ--gOFwwQSRKj1UXb5tnaKS",
         },
     },
     .paths = .{

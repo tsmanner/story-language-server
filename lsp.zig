@@ -167,12 +167,14 @@ test "jsonParseFromValue ContentPart" {
 const Null = @TypeOf(null);
 
 const Request = struct {
+    const Self = @This();
+
     /// If a method accepts parameters, this optional is the LSP data type of them.  null means it is called
     /// without parameters.
-    params: ?type = null,
+    params: ?type,
     /// If a method returns a result, this is the data type of it.  null means a method sends a response message with
     /// an explicit null result.
-    result: ?type = null,
+    result: ?type,
 
     pub const CallResult = []const u8;
 
@@ -183,13 +185,14 @@ const Request = struct {
         params: ?std.json.Value,
     ) !CallResult {
         const method = getDecl(@TypeOf(backend), method_name);
+        const request = @field(Self, method_name);
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
-        if (@field(Request, method_name).result) |Result| {
+        if (request.result) |Result| {
             const result: Result = try @call(
                 .auto,
                 method,
-                if (@field(Request, method_name).params) |Params|
+                if (request.params) |Params|
                     .{ backend, try std.json.parseFromValueLeaky(Params, arena.allocator(), params orelse return error.InvalidParams, .{}) }
                 else
                     .{backend},
@@ -202,7 +205,7 @@ const Request = struct {
             try @call(
                 .auto,
                 method,
-                if (@field(Request, method_name).params) |Params|
+                if (request.params) |Params|
                     .{ backend, try std.json.parseFromValueLeaky(Params, arena.allocator(), params, .{}) }
                 else
                     .{backend},
@@ -211,9 +214,9 @@ const Request = struct {
         }
     }
 
-    pub const initialize = Request{ .params = InitializeParams, .result = InitializeResult };
-    pub const shutdown = Request{};
-    pub const @"textDocument/definition" = Request{ .params = DefinitionParams, .result = DefinitionResult };
+    pub const initialize: Self = .{ .params = InitializeParams, .result = InitializeResult };
+    pub const shutdown: Self = .{ .params = null, .result = null };
+    pub const @"textDocument/definition": Request = .{ .params = DefinitionParams, .result = DefinitionResult };
 };
 
 const Notification = struct {
@@ -277,6 +280,32 @@ const JsonString = struct {
     }
 };
 
+fn handleRequest(allocator: std.mem.Allocator, request: RequestMessage, out: std.io.AnyWriter, backend: anytype) !void {
+    std.log.info("Processing [{}] '{s}' request", .{ request.id, request.method });
+    const response = ResponseMessage.init(
+        request.id,
+        callMethod(Request, allocator, backend, request.method, request.params),
+    );
+    std.log.info("Responding [{}] '{s}'", .{ request.id, request.method });
+    var response_buf = std.ArrayList(u8).init(allocator);
+    defer response_buf.deinit();
+    try logIfErr(
+        std.json.stringify(response, .{ .emit_null_optional_fields = false }, response_buf.writer()),
+        "stringifying response to '{s}' request",
+        .{request.method},
+    );
+    // Failure to communicate to the client is a fatal error.
+    try logIfErr(
+        out.print("Content-Length: {}\r\n\r\n{s}", .{ response_buf.items.len, response_buf.items }),
+        "printing '{s}' response",
+        .{request.method},
+    );
+    std.log.debug("Content-Length: {}\r\n\r\n{s}", .{ response_buf.items.len, response_buf.items });
+    if (std.meta.hasMethod(@TypeOf(backend), "responseSent")) {
+        try backend.responseSent();
+    }
+}
+
 /// Read LSP messages from `in` in a loop and dispatch them to `backend` until `backend` returns `error.Break` or
 /// the stream ends.  The stream ending before a break is a fatal error.
 pub fn serve(allocator: std.mem.Allocator, in: std.io.AnyReader, out: std.io.AnyWriter, backend: anytype) !void {
@@ -300,29 +329,31 @@ pub fn serve(allocator: std.mem.Allocator, in: std.io.AnyReader, out: std.io.Any
         }
         std.log.debug("Incoming message content:\n{s}", .{content_buf});
         var scanner = std.json.Scanner.initCompleteInput(arena.allocator(), content_buf);
-        const json_value = logIfErr(std.json.Value.jsonParse(arena.allocator(), &scanner, .{ .max_value_len = content_buf.len }), "parsing dynamic JSON Value from content", .{}) catch continue;
-        const content = logIfErr(std.json.parseFromValueLeaky(ContentPart, arena.allocator(), json_value, .{}), "parsing dynamic JSON into ContentPart struct", .{}) catch continue;
+        const json_value = logIfErr(
+            std.json.Value.jsonParse(arena.allocator(), &scanner, .{ .max_value_len = content_buf.len }),
+            "parsing dynamic JSON Value from content",
+            .{},
+        ) catch continue;
+        const content = logIfErr(
+            std.json.parseFromValueLeaky(ContentPart, arena.allocator(), json_value, .{}),
+            "parsing dynamic JSON into ContentPart struct",
+            .{},
+        ) catch continue;
         switch (content) {
             .notification => |notification| {
                 std.log.info("Processing [-] '{s}' notification", .{notification.method});
-                logIfErr(callMethod(Notification, arena.allocator(), backend, notification.method, notification.params), "processing '{s}' notification", .{notification.method}) catch continue;
+                logIfErr(
+                    callMethod(Notification, allocator, backend, notification.method, notification.params),
+                    "processing '{s}' notification",
+                    .{notification.method},
+                ) catch continue;
                 if (std.mem.eql(u8, "exit", notification.method)) {
                     break;
                 }
             },
-            .request => |request| {
-                std.log.info("Processing [{}] '{s}' request", .{ request.id, request.method });
-                const response = ResponseMessage.init(
-                    request.id,
-                    callMethod(Request, arena.allocator(), backend, request.method, request.params),
-                );
-                std.log.info("Responding [{}] '{s}'", .{ request.id, request.method });
-                var response_buf = std.ArrayList(u8).init(allocator);
-                defer response_buf.deinit();
-                logIfErr(std.json.stringify(response, .{ .emit_null_optional_fields = false }, response_buf.writer()), "stringifying response to '{s}' request", .{request.method}) catch continue;
-                // Failure to communicate to the client is a fatal error.
-                try logIfErr(out.print("Content-Length: {}\r\n\r\n{s}", .{ response_buf.items.len, response_buf.items }), "printing '{s}' response", .{request.method});
-                std.log.debug("Content-Length: {}\r\n\r\n{s}", .{ response_buf.items.len, response_buf.items });
+            .request => |request| handleRequest(arena.allocator(), request, out, backend) catch |err| switch (err) {
+                error.EndOfStream => break,
+                else => continue,
             },
             .response => |response| {
                 _ = response;
@@ -1624,20 +1655,36 @@ test {
     errdefer arena.deinit();
     const allocator = arena.allocator();
 
-    const initialize_s = "{\"capabilities\":{\"general\":{\"positionEncodings\":[\"utf-8\",\"utf-32\",\"utf-16\"]},\"textDocument\":{\"codeAction\":{\"codeActionLiteralSupport\":{\"codeActionKind\":{\"valueSet\":[\"\",\"quickfix\",\"refactor\",\"refactor.extract\",\"refactor.inline\",\"refactor.rewrite\",\"source\",\"source.organizeImports\"]}}},\"completion\":{\"completionItem\":{\"deprecatedSupport\":true,\"insertReplaceSupport\":true,\"resolveSupport\":{\"properties\":[\"documentation\",\"detail\",\"additionalTextEdits\"]},\"snippetSupport\":true,\"tagSupport\":{\"valueSet\":[1]}},\"completionItemKind\":{}},\"hover\":{\"contentFormat\":[\"markdown\"]},\"inlayHint\":{\"dynamicRegistration\":false},\"publishDiagnostics\":{\"versionSupport\":true},\"rename\":{\"dynamicRegistration\":false,\"honorsChangeAnnotations\":false,\"prepareSupport\":true},\"signatureHelp\":{\"signatureInformation\":{\"activeParameterSupport\":true,\"documentationFormat\":[\"markdown\"],\"parameterInformation\":{\"labelOffsetSupport\":true}}}},\"window\":{\"workDoneProgress\":true},\"workspace\":{\"applyEdit\":true,\"configuration\":true,\"didChangeConfiguration\":{\"dynamicRegistration\":false},\"executeCommand\":{\"dynamicRegistration\":false},\"inlayHint\":{\"refreshSupport\":false},\"symbol\":{\"dynamicRegistration\":false},\"workspaceEdit\":{\"documentChanges\":true,\"failureHandling\":\"abort\",\"normalizesLineEndings\":false,\"resourceOperations\":[\"create\",\"rename\",\"delete\"]},\"workspaceFolders\":true}},\"clientInfo\":{\"name\":\"helix\",\"version\":\"23.05 (7f5940be)\"},\"processId\":177984,\"rootPath\":\"/home/tsmanner/terrasa-notes\",\"rootUri\":null,\"workspaceFolders\":[]}";
-    var scanner = std.json.Scanner.initCompleteInput(allocator, initialize_s);
-    try std.testing.expectEqualStrings("{\"capabilities\":{}}", try callMethod(
-        Request,
-        allocator,
-        struct {
-            pub fn initialize(_: @This(), _: InitializeParams) !InitializeResult {
-                return .{ .capabilities = .{} };
+    {
+        const initialize_s = "{\"capabilities\":{\"general\":{\"positionEncodings\":[\"utf-8\",\"utf-32\",\"utf-16\"]},\"textDocument\":{\"codeAction\":{\"codeActionLiteralSupport\":{\"codeActionKind\":{\"valueSet\":[\"\",\"quickfix\",\"refactor\",\"refactor.extract\",\"refactor.inline\",\"refactor.rewrite\",\"source\",\"source.organizeImports\"]}}},\"completion\":{\"completionItem\":{\"deprecatedSupport\":true,\"insertReplaceSupport\":true,\"resolveSupport\":{\"properties\":[\"documentation\",\"detail\",\"additionalTextEdits\"]},\"snippetSupport\":true,\"tagSupport\":{\"valueSet\":[1]}},\"completionItemKind\":{}},\"hover\":{\"contentFormat\":[\"markdown\"]},\"inlayHint\":{\"dynamicRegistration\":false},\"publishDiagnostics\":{\"versionSupport\":true},\"rename\":{\"dynamicRegistration\":false,\"honorsChangeAnnotations\":false,\"prepareSupport\":true},\"signatureHelp\":{\"signatureInformation\":{\"activeParameterSupport\":true,\"documentationFormat\":[\"markdown\"],\"parameterInformation\":{\"labelOffsetSupport\":true}}}},\"window\":{\"workDoneProgress\":true},\"workspace\":{\"applyEdit\":true,\"configuration\":true,\"didChangeConfiguration\":{\"dynamicRegistration\":false},\"executeCommand\":{\"dynamicRegistration\":false},\"inlayHint\":{\"refreshSupport\":false},\"symbol\":{\"dynamicRegistration\":false},\"workspaceEdit\":{\"documentChanges\":true,\"failureHandling\":\"abort\",\"normalizesLineEndings\":false,\"resourceOperations\":[\"create\",\"rename\",\"delete\"]},\"workspaceFolders\":true}},\"clientInfo\":{\"name\":\"helix\",\"version\":\"23.05 (7f5940be)\"},\"processId\":177984,\"rootPath\":\"/home/tsmanner/terrasa-notes\",\"rootUri\":null,\"workspaceFolders\":[]}";
+        var scanner = std.json.Scanner.initCompleteInput(allocator, initialize_s);
+        defer _ = arena.reset(.free_all);
+        try std.testing.expectEqualStrings("{\"capabilities\":{}}", try callMethod(
+            Request,
+            allocator,
+            struct {
+                pub fn initialize(_: @This(), _: InitializeParams) !InitializeResult {
+                    return .{ .capabilities = .{} };
+                }
+            }{},
+            "initialize",
+            try std.json.Value.jsonParse(allocator, &scanner, .{ .max_value_len = scanner.input.len }),
+        ));
+    }
+
+    {
+        const Server = struct {
+            sent: usize = 0,
+            pub fn responseSent(self: *@This()) !void {
+                self.sent += 1;
             }
-        }{},
-        "initialize",
-        try std.json.Value.jsonParse(allocator, &scanner, .{ .max_value_len = scanner.input.len }),
-    ));
-    _ = arena.reset(.free_all);
+        };
+        var backend: Server = .{};
+        if (std.meta.hasMethod(@TypeOf(backend), "responseSent")) {
+            try backend.responseSent();
+        }
+        try std.testing.expectEqual(@as(usize, 1), backend.sent);
+    }
 
     try std.testing.expectError(error.InvalidParams, callMethod(
         Request,

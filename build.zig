@@ -30,16 +30,28 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("zeit", zeit);
     b.installArtifact(exe);
 
-    const tests = b.addTest(.{
-        .root_source_file = b.path("sls.zig"),
+    const lsp_tests = b.addTest(.{
+        .root_source_file = b.path("lsp.zig"),
+        .name = "lsp test",
         .target = target,
         .optimize = optimize,
     });
-    tests.root_module.addImport("lsp", lsp);
-    tests.root_module.addImport("zeit", zeit);
 
-    const run_tests = b.addRunArtifact(tests);
+    const run_lsp_tests = b.addRunArtifact(lsp_tests);
+
+    const sls_tests = b.addTest(.{
+        .root_source_file = b.path("sls.zig"),
+        .name = "sls test",
+        .target = target,
+        .optimize = optimize,
+    });
+    sls_tests.root_module.addImport("lsp", lsp);
+    sls_tests.root_module.addImport("zeit", zeit);
+
+    const run_sls_tests = b.addRunArtifact(sls_tests);
+    run_sls_tests.has_side_effects = true;
 
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_tests.step);
+    test_step.dependOn(&run_sls_tests.step);
+    test_step.dependOn(&run_lsp_tests.step);
 }
