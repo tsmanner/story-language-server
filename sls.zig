@@ -33,11 +33,19 @@ pub const std_options = std.Options{
 
 pub const Server = struct {
     const Files = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8));
+    const PositionEntry = struct {
+        start: lsp.Position,
+        end: lsp.Position,
+        file: []const u8,
+    };
+    const Positions = std.StringHashMapUnmanaged(std.ArrayListUnmanaged(PositionEntry));
 
     allocator: std.mem.Allocator,
     root: ?[]const u8 = null,
     /// Maps lowercase filename to relative file paths
     files: Files = .{},
+    /// Maps relative file path to position/Files-index pairs
+    positions: Positions = .{},
     response_arena: std.heap.ArenaAllocator,
 
     pub const Self = @This();
@@ -157,12 +165,6 @@ pub const Server = struct {
         const files = try self.lookup("Turminder Xuss");
         defer self.allocator.free(files);
         if (files.len != 0) {
-            std.log.info("{s}", .{self.root.?});
-            std.log.info("files[{}]", .{files.len});
-            for (files, 0..) |f, i| {
-                std.log.info("  {}: {s}", .{ i, f });
-            }
-            std.log.info("file://{s}/{s}", .{ self.root.?, files[0] });
             const path = try std.fmt.allocPrint(self.response_arena.allocator(), "file://{s}/{s}", .{ self.root.?, files[0] });
             std.log.info("  Definition URI: {s}", .{path});
             return .{ .location = .{
@@ -175,7 +177,9 @@ pub const Server = struct {
         }
     }
 
-    pub fn shutdown(_: *Self) !void {}
+    pub fn shutdown(_: *Self) !void {
+        std.log.info("Shutting down sls", .{});
+    }
 };
 
 test "Server" {
