@@ -20,33 +20,29 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const exe = b.addExecutable(.{
-        .name = "sls",
+    const sls = b.createModule(.{
         .root_source_file = b.path("sls.zig"),
         .target = target,
         .optimize = optimize,
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "sls",
+        .root_module = sls,
     });
     exe.root_module.addImport("lsp", lsp);
     exe.root_module.addImport("zeit", zeit);
     b.installArtifact(exe);
 
     const lsp_tests = b.addTest(.{
-        .root_source_file = b.path("lsp.zig"),
-        .name = "lsp test",
-        .target = target,
-        .optimize = optimize,
+        .root_module = lsp,
     });
 
     const run_lsp_tests = b.addRunArtifact(lsp_tests);
 
     const sls_tests = b.addTest(.{
-        .root_source_file = b.path("sls.zig"),
-        .name = "sls test",
-        .target = target,
-        .optimize = optimize,
+        .root_module = sls,
     });
-    sls_tests.root_module.addImport("lsp", lsp);
-    sls_tests.root_module.addImport("zeit", zeit);
 
     const run_sls_tests = b.addRunArtifact(sls_tests);
     run_sls_tests.has_side_effects = true;

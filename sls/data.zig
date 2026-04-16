@@ -17,6 +17,7 @@ pub const FileMap = struct {
     }
 };
 
+// TODO: Apply Zig 0.16 [Temporary Files API](https://ziglang.org/download/0.16.0/release-notes.html#Temporary-Files-API)
 test FileMap {
     var fm = FileMap.init(std.testing.allocator);
     try std.testing.expectEqual(std.testing.allocator, fm.allocator);
