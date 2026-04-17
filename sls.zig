@@ -1,20 +1,19 @@
 const lsp = @import("lsp");
 const std = @import("std");
-const story = @import("src/story.zig");
-const zeit = @import("zeit");
+// const story = @import("src/story.zig");
 
 var log_file: ?std.fs.File = null;
-var local_timezone: ?zeit.TimeZone = null;
+var io: ?std.Io = null;
 
 fn logFn(
     comptime message_level: std.log.Level,
-    comptime scope: @Type(.enum_literal),
+    comptime scope: @EnumLiteral(),
     comptime format: []const u8,
     args: anytype,
 ) void {
     if (log_file) |file| {
-        if (local_timezone) |*tz| {
-            const now = zeit.instant(.{}) catch return;
+        if (io) |*tz| {
+            const now = std.Io.Clock.real.now(io);
             now.in(tz).time().strftime(file.writer(), "[%d-%m-%Y %H:%M:%S %Z] ") catch return;
         } else {
             file.writer().print("[{:>11}] ", .{std.time.timestamp()}) catch return;
@@ -227,17 +226,14 @@ fn initLogFile(allocator: std.mem.Allocator) !void {
 fn initTimeZone(allocator: std.mem.Allocator) !void {
     var env = try std.process.getEnvMap(allocator);
     defer env.deinit();
-    local_timezone = try zeit.local(allocator, &env);
 }
 
-pub fn main() !u8 {
-    const allocator = std.heap.page_allocator;
+pub fn main(init: std.process.Init) !u8 {
+    io = init.io;
+    const allocator = init.arena;
 
     try initLogFile(allocator);
     defer if (log_file) |file| file.close();
-
-    try initTimeZone(allocator);
-    defer if (local_timezone) |tz| tz.deinit();
 
     var backend: Server = .init(allocator);
     std.log.info("Initiating sls!", .{});

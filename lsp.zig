@@ -48,11 +48,10 @@ pub const HeaderPart = struct {
     content_length: usize,
     content_type: ?[]const u8,
 
-    pub fn parse(reader: std.io.AnyReader) !HeaderPart {
+    pub fn parse(reader: *std.Io.Reader) !HeaderPart {
         var content_length: ?usize = null;
         var content_type: ?[]const u8 = null;
-        var buf: [4096]u8 = undefined;
-        while (try reader.readUntilDelimiterOrEof(&buf, '\n')) |line| {
+        while (try reader.takeDelimiter('\n')) |line| {
             // A blank line means the header is over.  Delimiter is not included in line.
             if (std.mem.eql(u8, "\r", line)) {
                 break;
@@ -93,12 +92,12 @@ pub const HeaderPart = struct {
 };
 
 test "jsonParseFromValue HeaderPart" {
-    var buf = std.io.fixedBufferStream("Content-Length: 12345\r\n\r\n");
-    const header = try HeaderPart.parse(buf.reader().any());
+    var buf: std.Io.Reader = .fixed("Content-Length: 12345\r\n\r\n");
+    const header = try HeaderPart.parse(&buf);
     try std.testing.expectEqual(@as(usize, 12345), header.content_length);
 
-    buf = std.io.fixedBufferStream("\r\n");
-    try std.testing.expectError(error.HeaderPartMissingContentLength, HeaderPart.parse(buf.reader().any()));
+    buf = .fixed("\r\n");
+    try std.testing.expectError(error.HeaderPartMissingContentLength, HeaderPart.parse(&buf));
 }
 
 pub const ContentPart = union(enum) {
@@ -164,7 +163,11 @@ test "jsonParseFromValue ContentPart" {
     try std.testing.expectEqual(5, content.request.id.integer);
 }
 
-const Null = @TypeOf(null);
+const Null = struct {
+    pub fn jsonStringify(_: Null, jw: anytype) !void {
+        try jw.write(null);
+    }
+};
 
 const Request = struct {
     const Self = @This();
@@ -197,10 +200,7 @@ const Request = struct {
                 else
                     .{backend},
             );
-            var buf = std.ArrayList(u8).init(allocator);
-            defer buf.deinit();
-            try std.json.stringify(result, .{ .emit_null_optional_fields = false }, buf.writer());
-            return try buf.toOwnedSlice();
+            return try std.json.Stringify.valueAlloc(allocator, result, .{ .emit_null_optional_fields = false });
         } else {
             try @call(
                 .auto,
@@ -1459,27 +1459,25 @@ fn Nullable(comptime T: type) type {
             return .{ .value = try std.json.parseFromValueLeaky(?T, allocator, source, options) };
         }
 
-        pub fn jsonStringify(self: @This(), write_stream: anytype) !void {
-            return write_stream.write(self.value);
+        pub fn jsonStringify(self: *const @This(), write_stream: anytype) !void {
+            if (self.value) |value| {
+                return write_stream.write(value);
+            }
+            return write_stream.write(null);
         }
     };
 }
 
-test Nullable {
-    var out = std.ArrayList(u8).init(std.testing.allocator);
+fn testJson(exp: []const u8, v: anytype) !void {
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer out.deinit();
+    try std.json.Stringify.value(v, .{ .emit_null_optional_fields = false }, &out.writer);
+    try std.testing.expectEqualStrings(exp, out.written());
+}
 
-    out.clearAndFree();
-    const n1: Nullable(i32) = .{ .value = 5 };
-    try std.testing.expectEqual(@as(i32, 5), n1.value);
-    try std.json.stringify(n1, .{ .emit_null_optional_fields = false }, out.writer());
-    try std.testing.expectEqualStrings("5", out.items);
-
-    out.clearAndFree();
-    const n2: Nullable(i32) = .{ .value = null };
-    try std.testing.expectEqual(null, n2.value);
-    try std.json.stringify(n2, .{ .emit_null_optional_fields = false }, out.writer());
-    try std.testing.expectEqualStrings("null", out.items);
+test Nullable {
+    try testJson("5", Nullable(i32){ .value = 5 });
+    try testJson("null", Nullable(i32){ .value = null });
 }
 
 fn jsonStringifyEnumAsInt(value: anytype, write_stream: anytype) !void {
@@ -1540,16 +1538,8 @@ fn jsonStringifyUnion(value: anytype, write_stream: anytype) !void {
 }
 
 test "std.json.stringify MessageId" {
-    var buf = std.ArrayList(u8).init(std.testing.allocator);
-    defer buf.deinit();
-
-    buf.clearAndFree();
-    try std.json.stringify(MessageId{ .integer = 5 }, .{}, buf.writer());
-    try std.testing.expectEqualStrings("5", buf.items);
-
-    buf.clearAndFree();
-    try std.json.stringify(MessageId{ .string = "foo" }, .{}, buf.writer());
-    try std.testing.expectEqualStrings("\"foo\"", buf.items);
+    try testJson("5", MessageId{ .integer = 5 });
+    try testJson("\"foo\"", MessageId{ .string = "foo" });
 }
 
 test "std.json.parseFromValue(MessageId, ...)" {
@@ -1571,53 +1561,28 @@ test "std.json.parseFromValue(MessageId, ...)" {
     try std.testing.expectEqualStrings("foo", id_foo.string);
 }
 
-const Foo = struct {
-    union_value: union(enum) {
-        null: Null,
-        void: void,
-        empty: struct {},
-        full: i32,
-        pub const jsonParseFromValue = jsonParseFromValueUnion(@This());
-        pub const jsonStringify = jsonStringifyUnion;
-    },
-    optional: ?i32 = null,
-};
-
 test {
-    var out = std.ArrayList(u8).init(std.testing.allocator);
-    defer out.deinit();
+    const Foo = struct {
+        pub const Union = union(enum) {
+            null: Null,
+            void: void,
+            empty: struct {},
+            full: i32,
+            pub const jsonParseFromValue = jsonParseFromValueUnion(@This());
+            pub const jsonStringify = jsonStringifyUnion;
+        };
+        union_value: Union,
+        optional: ?i32 = null,
+    };
 
-    out.clearAndFree();
-    try std.json.stringify(Foo{ .union_value = .{ .null = null } }, .{ .emit_null_optional_fields = false }, out.writer());
-    try std.testing.expectEqualStrings("{\"union_value\":null}", out.items);
-
-    out.clearAndFree();
-    try std.json.stringify(Foo{ .union_value = .{ .void = void{} } }, .{ .emit_null_optional_fields = false }, out.writer());
-    try std.testing.expectEqualStrings("{\"union_value\":{}}", out.items);
-
-    out.clearAndFree();
-    try std.json.stringify(Foo{ .union_value = .{ .empty = .{} } }, .{ .emit_null_optional_fields = false }, out.writer());
-    try std.testing.expectEqualStrings("{\"union_value\":{}}", out.items);
-
-    out.clearAndFree();
-    try std.json.stringify(Foo{ .union_value = .{ .full = 5 } }, .{ .emit_null_optional_fields = false }, out.writer());
-    try std.testing.expectEqualStrings("{\"union_value\":5}", out.items);
-
-    out.clearAndFree();
-    try std.json.stringify(Foo{ .union_value = .{ .null = null }, .optional = 8 }, .{ .emit_null_optional_fields = false }, out.writer());
-    try std.testing.expectEqualStrings("{\"union_value\":null,\"optional\":8}", out.items);
-
-    out.clearAndFree();
-    try std.json.stringify(Foo{ .union_value = .{ .void = void{} }, .optional = 8 }, .{ .emit_null_optional_fields = false }, out.writer());
-    try std.testing.expectEqualStrings("{\"union_value\":{},\"optional\":8}", out.items);
-
-    out.clearAndFree();
-    try std.json.stringify(Foo{ .union_value = .{ .empty = .{} }, .optional = 8 }, .{ .emit_null_optional_fields = false }, out.writer());
-    try std.testing.expectEqualStrings("{\"union_value\":{},\"optional\":8}", out.items);
-
-    out.clearAndFree();
-    try std.json.stringify(Foo{ .union_value = .{ .full = 5 }, .optional = 8 }, .{ .emit_null_optional_fields = false }, out.writer());
-    try std.testing.expectEqualStrings("{\"union_value\":5,\"optional\":8}", out.items);
+    try testJson("{\"union_value\":null}", Foo{ .union_value = .{ .null = .{} } });
+    try testJson("{\"union_value\":{}}", Foo{ .union_value = .{ .void = void{} } });
+    try testJson("{\"union_value\":{}}", Foo{ .union_value = .{ .empty = .{} } });
+    try testJson("{\"union_value\":5}", Foo{ .union_value = .{ .full = 5 } });
+    try testJson("{\"union_value\":null,\"optional\":8}", Foo{ .union_value = .{ .null = .{} }, .optional = 8 });
+    try testJson("{\"union_value\":{},\"optional\":8}", Foo{ .union_value = .{ .void = void{} }, .optional = 8 });
+    try testJson("{\"union_value\":{},\"optional\":8}", Foo{ .union_value = .{ .empty = .{} }, .optional = 8 });
+    try testJson("{\"union_value\":5,\"optional\":8}", Foo{ .union_value = .{ .full = 5 }, .optional = 8 });
 }
 
 test {

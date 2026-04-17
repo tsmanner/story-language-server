@@ -1,12 +1,6 @@
 .{
     .name = .sls,
     .version = "0.0.0",
-    .dependencies = .{
-        .zeit = .{
-            .url = "https://github.com/rockorager/zeit/archive/refs/tags/v0.7.0.tar.gz",
-            .hash = "zeit-0.6.0-5I6bk7V8AgAY0-hM-vUYtKZUFYhXct-VRkqISNNTfEfb",
-        },
-    },
     .fingerprint = 0xa9b20b36aec99331,
     .paths = .{
         "build.zig",
