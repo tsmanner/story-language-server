@@ -31,13 +31,13 @@ pub const std_options = std.Options{
 };
 
 pub const Server = struct {
-    const Files = std.StringHashMapUnmanaged(std.ArrayListUnmanaged([]const u8));
+    const Files = std.StringHashMapUnmanaged(std.ArrayList([]const u8));
     const PositionEntry = struct {
         start: lsp.Position,
         end: lsp.Position,
         file: []const u8,
     };
-    const Positions = std.StringHashMapUnmanaged(std.ArrayListUnmanaged(PositionEntry));
+    const Positions = std.StringHashMapUnmanaged(std.ArrayList(PositionEntry));
 
     allocator: std.mem.Allocator,
     root: ?[]const u8 = null,
@@ -142,7 +142,7 @@ pub const Server = struct {
     /// All other entries that partially match are returned in no particular order.
     /// Caller owns the returned memory and is expected to free it with self.allocator.
     fn lookup(self: *Self, term: []const u8) ![]const []const u8 {
-        var results: std.ArrayListUnmanaged([]const u8) = .empty;
+        var results: std.ArrayList([]const u8) = .empty;
         const lower = try std.ascii.allocLowerString(self.allocator, term);
         defer self.allocator.free(lower);
         var iter = self.files.iterator();
